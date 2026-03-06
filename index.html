@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Global NOTAM Viewer</title>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body { margin: 0; padding: 0; }
+        #map { height: 100vh; width: 100%; background: #222; }
+        .control-panel {
+            position: absolute; top: 10px; left: 50px; z-index: 1000;
+            background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+        }
+    </style>
+</head>
+<body>
+    <div class="control-panel">
+        <h3 style="margin:0 0 10px 0">Filtro de Región</h3>
+        <select id="regionFilter" onchange="filterNotams()">
+            <option value="ALL">Todo el Mundo</option>
+            <option value="EUROPA_S">Europa Sur</option>
+            <option value="EUROPA_N">Europa Norte</option>
+            <option value="USA_CANADA">Norteamérica</option>
+            <option value="LATAM">Latinoamérica</option>
+        </select>
+    </div>
+    <div id="map"></div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        var map = L.map('map').setView([20, 0], 3);
+        var notamLayer = L.layerGroup().addTo(map);
+
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap'
+        }).addTo(map);
+
+        let allData = [];
+
+        async function loadNotams() {
+            const response = await fetch('./data/notams_global.json');
+            const data = await response.json();
+            allData = data.features;
+            renderMarkers('ALL');
+        }
+
+        function renderMarkers(region) {
+            notamLayer.clearLayers();
+            allData.forEach(feat => {
+                if (region === 'ALL' || feat.properties.region === region) {
+                    // Dibujar el círculo del área afectada
+                    L.circle([feat.geometry.coordinates[1], feat.geometry.coordinates[0]], {
+                        color: 'red',
+                        fillColor: '#f03',
+                        fillOpacity: 0.4,
+                        radius: feat.properties.radius
+                    }).bindPopup(`<b>NOTAM ${feat.properties.id}</b><br><br>${feat.properties.text}`)
+                      .addTo(notamLayer);
+                }
+            });
+        }
+
+        function filterNotams() {
+            const selected = document.getElementById('regionFilter').value;
+            renderMarkers(selected);
+        }
+
+        loadNotams();
+    </script>
+</body>
+</html>
