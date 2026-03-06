@@ -2,22 +2,26 @@ import requests
 import json
 import re
 
-# Usamos aeropuertos grandes para asegurar que SIEMPRE hay NOTAMs
-REGIONES = {
-    'EUROPA': '["LEMD","LEBL","EGLL","LFPG","EDDF"]',
-    'USA': '["KJFK","KLAX","KORD"]'
+# Definimos áreas rectangulares [lat_min, lon_min, lat_max, lon_max]
+AREAS = {
+    'EUROPA_OESTE': {'lamin': 34, 'lomin': -12, 'lamax': 60, 'lomax': 20},
+    'USA_ESTE': {'lamin': 24, 'lomin': -85, 'lamax': 50, 'lomax': -65}
 }
 
 def parse_coords(text):
     if not text: return None
-    # Buscamos el patrón latitud/longitud (ej: 4030N00340W)
-    match = re.search(r'(\d{4}[NS])\s*(\d{5}[EW])', text)
+    # Buscamos el patrón clásico 4030N00340W o con espacios
+    match = re.search(r'(\d{2,4}[NS])\s*(\d{3,5}[EW])', text)
     if match:
         try:
             lat_s, lon_s = match.group(1), match.group(2)
-            lat = int(lat_s[:2]) + int(lat_s[2:4])/60
+            # Limpiar letras y convertir a decimal
+            lat_v = int(re.sub("[^0-9]", "", lat_s))
+            lat = (lat_v // 100) + (lat_v % 100 / 60)
             if 'S' in lat_s: lat = -lat
-            lon = int(lon_s[:3]) + int(lon_s[3:5])/60
+            
+            lon_v = int(re.sub("[^0-9]", "", lon_s))
+            lon = (lon_v // 100) + (lon_v % 100 / 60)
             if 'W' in lon_s: lon = -lon
             return [round(lon, 4), round(lat, 4)]
         except: return None
@@ -25,49 +29,45 @@ def parse_coords(text):
 
 def process():
     all_features = []
-    # IMPORTANTE: Añadimos un User-Agent para que la API no nos bloquee
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-    }
+    # User-Agent para que parezca un navegador normal
+    headers = {'User-Agent': 'Mozilla/5.0'}
 
-    for nombre, codes in REGIONES.items():
-        url = f"https://api.autorouter.aero/v1.0/notam?itemas={codes}"
-        print(f"Intentando conectar con {nombre}...")
+    for nombre, coords in AREAS.items():
+        print(f"Consultando OpenSky: {nombre}...")
+        url = "https://opensky-network.org/api/notams"
         
         try:
-            r = requests.get(url, headers=headers, timeout=25)
+            # Enviamos los parámetros de la caja de coordenadas
+            r = requests.get(url, params=coords, headers=headers, timeout=20)
             
-            # Si la API responde pero no es un JSON, imprimimos el error para saber qué pasa
-            if r.status_code != 200:
-                print(f"Error de API {r.status_code}: Posible bloqueo o mantenimiento.")
-                continue
-
-            data = r.json()
-            print(f"¡Conectado! Recibidos {len(data)} NOTAMs brutos.")
-            
-            for item in data:
-                # Buscamos en itemq (línea Q) o iteme (texto descriptivo)
-                coords = parse_coords(item.get('itemq', '')) or parse_coords(item.get('iteme', ''))
+            if r.status_code == 200:
+                data = r.json()
+                print(f"¡Éxito! {len(data)} NOTAMs encontrados en {nombre}.")
                 
-                if coords:
-                    all_features.append({
-                        "type": "Feature",
-                        "geometry": {"type": "Point", "coordinates": coords},
-                        "properties": {
-                            "id": item.get('id', 'N/A'),
-                            "text": item.get('iteme', 'No text'),
-                            "radius": 5000 
-                        }
-                    })
+                for item in data:
+                    texto = item.get('text', '')
+                    pos = parse_coords(texto)
+                    
+                    if pos:
+                        all_features.append({
+                            "type": "Feature",
+                            "geometry": {"type": "Point", "coordinates": pos},
+                            "properties": {
+                                "id": item.get('icao24', 'N/A'), # ID de la zona
+                                "text": texto,
+                                "radius": 5000 # 5km por defecto
+                            }
+                        })
+            else:
+                print(f"Error {r.status_code} en OpenSky. Saltando...")
         except Exception as e:
-            print(f"Error crítico en {nombre}: {e}")
+            print(f"Error conexión: {e}")
 
-    # Guardar resultado
-    output = {"type": "FeatureCollection", "features": all_features}
+    # Guardar GeoJSON final
     with open('data/notams_global.json', 'w') as f:
-        json.dump(output, f, indent=2)
+        json.dump({"type": "FeatureCollection", "features": all_features}, f, indent=2)
     
-    print(f"\nFINALIZADO: {len(all_features)} NOTAMs geolocalizados guardados en JSON.")
+    print(f"FINALIZADO: {len(all_features)} NOTAMs con posición listos para el mapa.")
 
 if __name__ == "__main__":
     process()
