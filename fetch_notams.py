@@ -1,84 +1,74 @@
 import requests
 import json
 import re
-import math
 
-# Definimos las regiones por prefijos ICAO
+# Prefijos ICAO para barrer el mundo
 REGIONES = {
-    'EUROPA_S': '["LE","LP","LI","LG","LF"]',
-    'EUROPA_N': '["EG","ED","EB","EL","EK","ES"]',
-    'USA_CANADA': '["K","C"]',
-    'LATAM': '["SB","SA","SC","SP","SK","SV","MP","MS"]',
-    'ASIA_PACIFICO': '["RC","RJ","RK","RP","YB","NZ"]',
-    'ORIENTE_MEDIO': '["OB","OE","OM","OK","LL"]'
+    'EUROPA': '["LE","LP","LI","LG","LF","EG","ED","EB","EK"]',
+    'USA_CAN': '["K","C"]',
+    'LATAM': '["SB","SA","SC","SP","SK","SV"]',
+    'ASIA_PAC': '["RC","RJ","RK","RP","YB"]'
 }
 
-def dmsc_to_decimal(coord_str):
-    """Convierte formato NOTAM (4030N00340W) a decimal."""
-    try:
-        lat_deg = int(coord_str[0:2])
-        lat_min = int(coord_str[2:4])
-        lat_dir = coord_str[4]
-        lon_deg = int(coord_str[5:8])
-        lon_min = int(coord_str[8:10])
-        lon_dir = coord_str[10]
-        
-        lat = lat_deg + (lat_min / 60)
-        if lat_dir == 'S': lat = -lat
-        
-        lon = lon_deg + (lon_min / 60)
-        if lon_dir == 'W': lon = -lon
-        return [lon, lat]
-    except:
-        return None
-
-def process_notams():
-    all_features = []
+def parse_any_coord(text):
+    """Busca coordenadas en formatos: 4030N00340W, 4030N 00340W, o 40.5 -3.4"""
+    # 1. Formato estándar NOTAM: 4030N00340W (11 caracteres)
+    match = re.search(r'(\d{4}[NS])\s*(\d{5}[EW])', text)
+    if match:
+        lat_str, lon_str = match.group(1), match.group(2)
+        lat = int(lat_str[:2]) + int(lat_str[2:4])/60
+        if 'S' in lat_str: lat = -lat
+        lon = int(lon_str[:3]) + int(lon_str[3:5])/60
+        if 'W' in lon_str: lon = -lon
+        return [round(lon, 4), round(lat, 4)]
     
+    # 2. Formato alternativo con espacios o puntos
+    match = re.search(r'(\d{2})°?(\d{2})\'?([NS])\s*(\d{3})°?(\d{2})\'?([EW])', text)
+    if match:
+        lat = int(match.group(1)) + int(match.group(2))/60
+        if match.group(3) == 'S': lat = -lat
+        lon = int(match.group(4)) + int(match.group(5))/60
+        if match.group(6) == 'W': lon = -lon
+        return [round(lon, 4), round(lat, 4)]
+        
+    return None
+
+def process():
+    all_features = []
     for nombre, codes in REGIONES.items():
-        print(f"Descargando {nombre}...")
+        print(f"Consultando {nombre}...")
         url = f"https://api.autorouter.aero/v1.0/notam?itemas={codes}"
         try:
             r = requests.get(url, timeout=20)
-            data = r.json()
+            if r.status_code != 200: continue
             
+            data = r.json()
             for item in data:
-                linea_q = item.get('itemq', '')
-                texto = item.get('iteme', '')
-                id_notam = item.get('id', 'N/A')
+                # Prioridad 1: Línea Q (el estándar oficial)
+                coords = parse_any_coord(item.get('itemq', ''))
                 
-                # Buscamos coordenadas en la línea Q (ej: 4030N00340W005)
-                match = re.search(r'(\d{10}[NS]\d{11}|[0-9]{5}[NS][0-9]{6})', linea_q)
-                if not match: # Si no está en Q, buscamos en el texto
-                    match = re.search(r'(\d{4}[NS]\d{5}[EW])', texto)
+                # Prioridad 2: Si Q falla, buscamos en el texto (Item E)
+                if not coords:
+                    coords = parse_any_coord(item.get('iteme', ''))
                 
-                if match:
-                    coord_raw = match.group(1)
-                    coords = dmsc_to_decimal(coord_raw)
-                    
-                    # Extraer radio (últimos 3 dígitos de la secuencia si existen)
-                    radio_nm = 5 # Radio por defecto 5 Millas Náuticas
-                    if len(coord_raw) > 11:
-                        try: radio_nm = int(coord_raw[-3:])
-                        except: pass
-
-                    if coords:
-                        all_features.append({
-                            "type": "Feature",
-                            "geometry": {"type": "Point", "coordinates": coords},
-                            "properties": {
-                                "id": id_notam,
-                                "region": nombre,
-                                "text": texto,
-                                "radius": radio_nm * 1852 # Convertir a metros para Leaflet
-                            }
-                        })
+                if coords:
+                    all_features.append({
+                        "type": "Feature",
+                        "geometry": {"type": "Point", "coordinates": coords},
+                        "properties": {
+                            "id": item.get('id', 'N/A'),
+                            "region": nombre,
+                            "text": item.get('iteme', 'Sin texto'),
+                            "radius": 5000 # 5km por defecto si no hay radio
+                        }
+                    })
         except Exception as e:
             print(f"Error en {nombre}: {e}")
 
-    # Guardar todo en un solo archivo GeoJSON
+    # Guardar el JSON (asegúrate de que la carpeta data existe)
     with open('data/notams_global.json', 'w') as f:
-        json.dump({"type": "FeatureCollection", "features": all_features}, f)
+        json.dump({"type": "FeatureCollection", "features": all_features}, f, indent=2)
+    print(f"Proceso finalizado. Se han encontrado {len(all_features)} NOTAMs con posición.")
 
 if __name__ == "__main__":
-    process_notams()
+    process()
